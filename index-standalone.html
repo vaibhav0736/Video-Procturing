@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Proctoring System</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
+    <script src="https://unpkg.com/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+    <script src="https://unpkg.com/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+                'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+                sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useCallback } = React;
+
+        const VideoProctoring = () => {
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const [isRecording, setIsRecording] = useState(false);
+            const [recorder, setRecorder] = useState(null);
+            const [events, setEvents] = useState([]);
+            const [alerts, setAlerts] = useState([]);
+            const [faceDetector, setFaceDetector] = useState(null);
+            const [objectDetector, setObjectDetector] = useState(null);
+            const [isModelLoading, setIsModelLoading] = useState(true);
+            
+            // Tracking states
+            const [faceCount, setFaceCount] = useState(0);
+            const [lookingAway, setLookingAway] = useState(false);
+            const [noFaceDetected, setNoFaceDetected] = useState(false);
+            const [suspiciousObjects, setSuspiciousObjects] = useState([]);
+            
+            // Timers
+            const lookingAwayTimer = useRef(null);
+            const noFaceTimer = useRef(null);
+            
+            const suspiciousItems = ['cell phone', 'book', 'laptop', 'tablet', 'remote', 'keyboard'];
+
+            const addEvent = useCallback((type, description, severity = 'info') => {
+                const event = {
+                    id: Date.now(),
+                    timestamp: new Date().toISOString(),
+                    type,
+                    description,
+                    severity
+                };
+                setEvents(prev => [event, ...prev]);
+                
+                if (severity === 'warning' || severity === 'error') {
+                    setAlerts(prev => [event, ...prev.slice(0, 4)]);
+                }
+            }, []);
+
+            const initializeModels = useCallback(async () => {
+                try {
+                    setIsModelLoading(true);
+                    
+                    // Initialize TensorFlow.js
+                    await tf.ready();
+                    
+                    // Load COCO-SSD model for object detection
+                    const cocoModel = await cocoSsd.load();
+                    setObjectDetector(cocoModel);
+                    
+                    // Load BlazeFace model for face detection
+                    const faceModel = await blazeface.load();
+                    setFaceDetector(faceModel);
+                    
+                    addEvent('system', 'AI models loaded successfully', 'info');
+                    setIsModelLoading(false);
+                } catch (error) {
+                    console.error('Error initializing models:', error);
+                    addEvent('system', 'Error loading AI models', 'error');
+                    setIsModelLoading(false);
+                }
+            }, [addEvent]);
+
+            const detectFaces = useCallback(async () => {
+                if (!faceDetector || !videoRef.current) return;
+                
+                try {
+                    const predictions = await faceDetector.estimateFaces(videoRef.current, false);
+                    const canvas = canvasRef.current;
+                    const video = videoRef.current;
+                    
+                    if (!canvas || !video) return;
+                    
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    
+                    // Clear canvas
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    setFaceCount(predictions.length);
+                    
+                    // Handle multiple faces
+                    if (predictions.length > 1) {
+                        addEvent('violation', `Multiple faces detected: ${predictions.length}`, 'warning');
+                    }
+                    
+                    // Handle no face detection
+                    if (predictions.length === 0) {
+                        if (!noFaceDetected) {
+                            setNoFaceDetected(true);
+                            noFaceTimer.current = setTimeout(() => {
+                                addEvent('violation', 'No face detected for more than 10 seconds', 'error');
+                            }, 10000);
+                        }
+                    } else {
+                        if (noFaceDetected) {
+                            setNoFaceDetected(false);
+                            if (noFaceTimer.current) {
+                                clearTimeout(noFaceTimer.current);
+                                noFaceTimer.current = null;
+                            }
+                        }
+                    }
+                    
+                    // Draw face detections
+                    predictions.forEach((prediction) => {
+                        const [x, y, width, height] = prediction.topLeft.concat(prediction.bottomRight);
+                        
+                        // Draw bounding box
+                        ctx.strokeStyle = predictions.length > 1 ? '#ff4444' : '#44ff44';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(x, y, width - x, height - y);
+                        
+                        // Simple gaze analysis based on face position
+                        const faceCenter = [(x + width) / 2, (y + height) / 2];
+                        const canvasCenter = [canvas.width / 2, canvas.height / 2];
+                        const distance = Math.sqrt(
+                            Math.pow(faceCenter[0] - canvasCenter[0], 2) + 
+                            Math.pow(faceCenter[1] - canvasCenter[1], 2)
+                        );
+                        
+                        const isLookingAway = distance > canvas.width * 0.2;
+                        
+                        if (isLookingAway && !lookingAway) {
+                            setLookingAway(true);
+                            lookingAwayTimer.current = setTimeout(() => {
+                                addEvent('violation', 'Candidate looking away for more than 5 seconds', 'warning');
+                            }, 5000);
+                        } else if (!isLookingAway && lookingAway) {
+                            setLookingAway(false);
+                            if (lookingAwayTimer.current) {
+                                clearTimeout(lookingAwayTimer.current);
+                                lookingAwayTimer.current = null;
+                            }
+                        }
+                    });
+                } catch (error) {
+                    console.error('Face detection error:', error);
+                }
+            }, [faceDetector, addEvent, lookingAway, noFaceDetected]);
+
+            const detectObjects = useCallback(async () => {
+                if (!objectDetector || !videoRef.current) return;
+                
+                try {
+                    const predictions = await objectDetector.detect(videoRef.current);
+                    const suspicious = predictions.filter(pred => 
+                        suspiciousItems.some(item => pred.class.toLowerCase().includes(item))
+                    );
+                    
+                    if (suspicious.length > 0) {
+                        const detectedItems = suspicious.map(pred => pred.class).join(', ');
+                        setSuspiciousObjects(suspicious);
+                        addEvent('violation', `Suspicious objects detected: ${detectedItems}`, 'error');
+                    } else {
+                        setSuspiciousObjects([]);
+                    }
+                    
+                    // Draw object detection boxes
+                    const canvas = canvasRef.current;
+                    if (canvas) {
+                        const ctx = canvas.getContext('2d');
+                        
+                        suspicious.forEach(prediction => {
+                            const [x, y, width, height] = prediction.bbox;
+                            
+                            // Draw bounding box for suspicious objects
+                            ctx.strokeStyle = '#ff0000';
+                            ctx.lineWidth = 3;
+                            ctx.strokeRect(x, y, width, height);
+                            
+                            // Draw label
+                            ctx.fillStyle = '#ff0000';
+                            ctx.font = '16px Arial';
+                            ctx.fillText(
+                                `${prediction.class} (${Math.round(prediction.score * 100)}%)`,
+                                x, y > 20 ? y - 5 : y + 20
+                            );
+                        });
+                    }
+                } catch (error) {
+                    console.error('Object detection error:', error);
+                }
+            }, [objectDetector, addEvent]);
+
+            const startCamera = useCallback(async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { width: 1280, height: 720 },
+                        audio: true
+                    });
+                    
+                    if (videoRef.current) {
+                        videoRef.current.srcObject = stream;
+                        addEvent('system', 'Camera started successfully', 'info');
+                    }
+                } catch (error) {
+                    console.error('Error accessing camera:', error);
+                    addEvent('system', 'Error accessing camera', 'error');
+                }
+            }, [addEvent]);
+
+            const startRecording = useCallback(() => {
+                if (!videoRef.current || !videoRef.current.srcObject) return;
+                
+                const stream = videoRef.current.srcObject;
+                const mediaRecorder = new MediaRecorder(stream);
+                const chunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        chunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(chunks, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `interview-${new Date().toISOString().slice(0, 19)}.webm`;
+                    a.click();
+                    
+                    addEvent('system', 'Recording saved', 'info');
+                };
+                
+                mediaRecorder.start();
+                setRecorder(mediaRecorder);
+                setIsRecording(true);
+                addEvent('system', 'Recording started', 'info');
+            }, [addEvent]);
+
+            const stopRecording = useCallback(() => {
+                if (!recorder) return;
+                
+                recorder.stop();
+                setIsRecording(false);
+                setRecorder(null);
+            }, [recorder]);
+
+            useEffect(() => {
+                initializeModels();
+            }, [initializeModels]);
+
+            useEffect(() => {
+                if (!isModelLoading) {
+                    startCamera();
+                }
+            }, [isModelLoading, startCamera]);
+
+            useEffect(() => {
+                if (objectDetector && faceDetector) {
+                    const interval = setInterval(() => {
+                        detectObjects();
+                        detectFaces();
+                    }, 1000);
+                    return () => clearInterval(interval);
+                }
+            }, [objectDetector, faceDetector, detectObjects, detectFaces]);
+
+            const getSeverityColor = (severity) => {
+                switch (severity) {
+                    case 'error': return 'text-red-600 bg-red-50 border-red-200';
+                    case 'warning': return 'text-yellow-600 bg-yellow-50 border-yellow-200';
+                    default: return 'text-blue-600 bg-blue-50 border-blue-200';
+                }
+            };
+
+            return React.createElement('div', { className: "grid grid-cols-1 lg:grid-cols-3 gap-6" },
+                // Video Feed
+                React.createElement('div', { className: "lg:col-span-2" },
+                    React.createElement('div', { className: "bg-white rounded-lg shadow-md p-6" },
+                        React.createElement('div', { className: "flex justify-between items-center mb-4" },
+                            React.createElement('h2', { className: "text-xl font-semibold text-gray-900" }, "Candidate Video Feed"),
+                            React.createElement('div', { className: "flex space-x-2" },
+                                React.createElement('button', {
+                                    onClick: isRecording ? stopRecording : startRecording,
+                                    className: `px-4 py-2 rounded-md font-medium ${isRecording ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-green-600 text-white hover:bg-green-700'}`,
+                                    disabled: isModelLoading
+                                }, isRecording ? 'Stop Recording' : 'Start Recording')
+                            )
+                        ),
+                        React.createElement('div', { className: "relative bg-gray-900 rounded-lg overflow-hidden" },
+                            React.createElement('video', {
+                                ref: videoRef,
+                                autoPlay: true,
+                                muted: true,
+                                playsInline: true,
+                                className: "w-full h-auto"
+                            }),
+                            React.createElement('canvas', {
+                                ref: canvasRef,
+                                className: "absolute top-0 left-0 w-full h-full"
+                            }),
+                            isModelLoading && React.createElement('div', { className: "absolute inset-0 flex items-center justify-center bg-black bg-opacity-50" },
+                                React.createElement('div', { className: "text-white text-center" },
+                                    React.createElement('div', { className: "animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4" }),
+                                    React.createElement('p', null, "Loading AI models...")
+                                )
+                            )
+                        ),
+                        // Status Indicators
+                        React.createElement('div', { className: "mt-4 grid grid-cols-2 md:grid-cols-4 gap-4" },
+                            React.createElement('div', { className: "bg-gray-50 p-3 rounded-lg" },
+                                React.createElement('p', { className: "text-sm text-gray-600" }, "Faces Detected"),
+                                React.createElement('p', { className: `text-lg font-semibold ${faceCount === 1 ? 'text-green-600' : 'text-red-600'}` }, faceCount)
+                            ),
+                            React.createElement('div', { className: "bg-gray-50 p-3 rounded-lg" },
+                                React.createElement('p', { className: "text-sm text-gray-600" }, "Looking Away"),
+                                React.createElement('p', { className: `text-lg font-semibold ${lookingAway ? 'text-red-600' : 'text-green-600'}` }, lookingAway ? 'Yes' : 'No')
+                            ),
+                            React.createElement('div', { className: "bg-gray-50 p-3 rounded-lg" },
+                                React.createElement('p', { className: "text-sm text-gray-600" }, "No Face Timer"),
+                                React.createElement('p', { className: `text-lg font-semibold ${noFaceDetected ? 'text-red-600' : 'text-green-600'}` }, noFaceDetected ? 'Active' : 'Inactive')
+                            ),
+                            React.createElement('div', { className: "bg-gray-50 p-3 rounded-lg" },
+                                React.createElement('p', { className: "text-sm text-gray-600" }, "Suspicious Objects"),
+                                React.createElement('p', { className: `text-lg font-semibold ${suspiciousObjects.length > 0 ? 'text-red-600' : 'text-green-600'}` }, suspiciousObjects.length)
+                            )
+                        )
+                    )
+                ),
+
+                // Monitoring Panel
+                React.createElement('div', { className: "space-y-6" },
+                    // Active Alerts
+                    React.createElement('div', { className: "bg-white rounded-lg shadow-md p-6" },
+                        React.createElement('h3', { className: "text-lg font-semibold text-gray-900 mb-4" }, "Active Alerts"),
+                        React.createElement('div', { className: "space-y-2 max-h-48 overflow-y-auto" },
+                            alerts.length === 0 ? 
+                                React.createElement('p', { className: "text-gray-500 text-sm" }, "No active alerts") :
+                                alerts.map((alert) => 
+                                    React.createElement('div', {
+                                        key: alert.id,
+                                        className: `p-3 rounded-md border ${getSeverityColor(alert.severity)}`
+                                    },
+                                        React.createElement('p', { className: "font-medium text-sm" }, alert.description),
+                                        React.createElement('p', { className: "text-xs opacity-75" }, 
+                                            new Date(alert.timestamp).toLocaleTimeString()
+                                        )
+                                    )
+                                )
+                        )
+                    ),
+
+                    // Event Log
+                    React.createElement('div', { className: "bg-white rounded-lg shadow-md p-6" },
+                        React.createElement('h3', { className: "text-lg font-semibold text-gray-900 mb-4" }, "Event Log"),
+                        React.createElement('div', { className: "space-y-2 max-h-96 overflow-y-auto" },
+                            events.length === 0 ? 
+                                React.createElement('p', { className: "text-gray-500 text-sm" }, "No events logged") :
+                                events.map((event) => 
+                                    React.createElement('div', {
+                                        key: event.id,
+                                        className: "p-2 border-l-4 border-gray-200 bg-gray-50"
+                                    },
+                                        React.createElement('div', { className: "flex justify-between items-start" },
+                                            React.createElement('div', null,
+                                                React.createElement('p', { className: "text-sm font-medium text-gray-900" }, event.description),
+                                                React.createElement('p', { className: "text-xs text-gray-500" }, 
+                                                    `${event.type} • ${new Date(event.timestamp).toLocaleTimeString()}`
+                                                )
+                                            ),
+                                            React.createElement('span', {
+                                                className: `px-2 py-1 text-xs rounded-full ${
+                                                    event.severity === 'error' ? 'bg-red-100 text-red-800' :
+                                                    event.severity === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                                                    'bg-blue-100 text-blue-800'
+                                                }`
+                                            }, event.severity)
+                                        )
+                                    )
+                                )
+                        )
+                    )
+                )
+            );
+        };
+
+        const App = () => {
+            return React.createElement('div', { className: "min-h-screen bg-gray-100" },
+                React.createElement('header', { className: "bg-white shadow-sm border-b" },
+                    React.createElement('div', { className: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4" },
+                        React.createElement('h1', { className: "text-2xl font-bold text-gray-900" }, "Video Proctoring System"),
+                        React.createElement('p', { className: "text-gray-600 mt-1" }, "Real-time monitoring for online interviews")
+                    )
+                ),
+                React.createElement('main', { className: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8" },
+                    React.createElement(VideoProctoring)
+                )
+            );
+        };
+
+        ReactDOM.render(React.createElement(App), document.getElementById('root'));
+    </script>
+</body>
+</html>
