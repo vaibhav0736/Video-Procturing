@@ -16,9 +16,10 @@
   "dependencies": {
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "@tensorflow/tfjs": "^4.15.0",
-    "@tensorflow-models/coco-ssd": "^2.2.2",
-    "@tensorflow-models/blazeface": "^0.0.7"
+    "@tensorflow/tfjs": "3.21.0",
+    "@tensorflow/tfjs-converter": "3.21.0",
+    "@tensorflow-models/coco-ssd": "2.2.3",
+    "@tensorflow-models/blazeface": "0.0.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
