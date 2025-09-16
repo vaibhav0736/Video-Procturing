@@ -16,8 +16,8 @@
   "dependencies": {
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "@tensorflow/tfjs": "3.21.0",
-    "@tensorflow/tfjs-converter": "3.21.0",
+    "@tensorflow/tfjs": "4.22.0",
+    "@tensorflow/tfjs-converter": "4.22.0",
     "@tensorflow-models/coco-ssd": "2.2.3",
     "@tensorflow-models/blazeface": "0.0.7"
   },
