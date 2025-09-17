@@ -27,10 +27,12 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // CORS configuration
+// CORS configuration
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: ['http://localhost:5173', 'https://video-procturing-qs5h.vercel.app'],
   credentials: true
 }));
+
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
